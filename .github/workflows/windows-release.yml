@@ -37,6 +37,27 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
+      - name: Verify Inno Setup
+        shell: pwsh
+        run: |
+          $onPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if ($onPath) {
+            Write-Host "ISCC in PATH: $($onPath.Source)"
+          } else {
+            Write-Host "ISCC not found in PATH; installer script will search known locations."
+          }
+
+          $candidates = @(
+            (Join-Path ([Environment]::GetFolderPath("ProgramFilesX86")) "Inno Setup 6\ISCC.exe"),
+            (Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "Inno Setup 6\ISCC.exe"),
+            (Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Programs\Inno Setup 6\ISCC.exe")
+          )
+          foreach ($candidate in $candidates) {
+            if (Test-Path $candidate) {
+              Write-Host "Found ISCC candidate: $candidate"
+            }
+          }
+
       - name: Build EXE
         shell: pwsh
         run: .\build_windows_exe.ps1 -DistPath dist_release -WorkPath build_release

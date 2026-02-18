@@ -19,16 +19,35 @@ if (-not (Test-Path $distExe)) {
     }
 }
 
-$isccCandidates = @(
-    "$Env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-    "$Env:ProgramFiles\Inno Setup 6\ISCC.exe",
-    "$Env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-)
-
-$iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $iscc) {
-    throw "Inno Setup compiler (ISCC.exe) not found. Install Inno Setup 6 and rerun."
+$iscc = $null
+$isccOnPath = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+if ($isccOnPath) {
+    $iscc = $isccOnPath.Source
 }
+
+$programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+$programFiles = [Environment]::GetFolderPath("ProgramFiles")
+$localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+
+$isccCandidates = @()
+if ($programFilesX86) {
+    $isccCandidates += (Join-Path $programFilesX86 "Inno Setup 6\ISCC.exe")
+}
+if ($programFiles) {
+    $isccCandidates += (Join-Path $programFiles "Inno Setup 6\ISCC.exe")
+}
+if ($localAppData) {
+    $isccCandidates += (Join-Path $localAppData "Programs\Inno Setup 6\ISCC.exe")
+}
+
+if (-not $iscc) {
+    $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $iscc) {
+    $checked = ($isccCandidates | ForEach-Object { " - $_" }) -join "`n"
+    throw "Inno Setup compiler (ISCC.exe) not found. Checked:`n$checked"
+}
+Write-Host "Using Inno Setup compiler: $iscc"
 
 $issPath = Join-Path $PSScriptRoot "installer\image_finder.iss"
 $sourceDirForIss = "..\" + $SourceDistDir.Replace("/", "\")
