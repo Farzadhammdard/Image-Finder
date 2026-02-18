@@ -1,0 +1,27 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Local tool state
+.qodo/
+
+# Build artifacts
+build/
+build_*/
+dist/
+dist_*/
+installer/output/
+*.spec
+
+# Local runtime data
+index_data/
+tmp_index_*/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
