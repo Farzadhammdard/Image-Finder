@@ -20,7 +20,7 @@ def _configure_console_encoding() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="image-finder",
-        description="Fast local image similarity search focused on black/white CNC patterns.",
+        description="Fast local image and DXF similarity search focused on black/white CNC patterns.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -34,8 +34,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Worker threads for indexing (0 = auto).",
     )
 
-    search_parser = subparsers.add_parser("search", help="Search similar images from the index.")
-    search_parser.add_argument("--query", required=True, help="Path to query image.")
+    search_parser = subparsers.add_parser("search", help="Search similar image/DXF files from the index.")
+    search_parser.add_argument("--query", required=True, help="Path to query file (image or DXF).")
     search_parser.add_argument("--index", required=True, help="Index directory created by index command.")
     search_parser.add_argument("--top-k", type=int, default=10, help="Number of matches to return.")
     search_parser.add_argument(
@@ -66,9 +66,16 @@ def main() -> int:
         output = Path(args.output).expanduser().resolve()
         workers = None if args.workers <= 0 else args.workers
         stats = build_index(folders=folders, output_dir=output, workers=workers)
-        print(f"Indexed images: {stats['indexed']}")
+        print(f"Indexed files: {stats['indexed']}")
         print(f"Reused from last index: {stats.get('reused', 0)}")
         print(f"Skipped unreadable: {stats.get('failed', 0)}")
+        if stats.get("embedding_ready", 0):
+            print(
+                "AI embedding index: enabled "
+                f"(new: {stats.get('embedding_indexed', 0)}, reused: {stats.get('embedding_reused', 0)})"
+            )
+        else:
+            print("AI embedding index: unavailable (classic visual search fallback)")
         print(f"Index saved to: {output}")
         return 0
 
@@ -101,7 +108,8 @@ def main() -> int:
         for i, result in enumerate(results, start=1):
             print(
                 f"{i:02d}. score={result.score:.4f} "
-                f"vector={result.vector_score:.4f} hash={result.hash_score:.4f} text={result.text_score:.4f} "
+                f"vector={result.vector_score:.4f} hash={result.hash_score:.4f} "
+                f"embed={result.embedding_score:.4f} text={result.text_score:.4f} "
                 f"path={result.path}"
             )
         return 0

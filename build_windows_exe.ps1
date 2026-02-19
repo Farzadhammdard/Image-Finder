@@ -1,6 +1,6 @@
 param(
-    [string]$DistPath = "dist_v3",
-    [string]$WorkPath = "build_v3"
+    [string]$DistPath = "dist_v4",
+    [string]$WorkPath = "build_v4"
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,8 +33,10 @@ $pyInstallerArgs = @(
     "--clean",
     "--windowed",
     "--name", "ImageFinder",
-    "--collect-all", "tkinterdnd2",
     "--collect-all", "rapidocr_onnxruntime",
+    "--collect-all", "sentence_transformers",
+    "--collect-all", "faiss",
+    "--collect-all", "PySide6",
     "--paths", $PSScriptRoot,
     "--distpath", $distFull,
     "--workpath", $workFull
@@ -43,6 +45,11 @@ $pyInstallerArgs = @(
 $assetsDir = Join-Path $PSScriptRoot "assets"
 if (Test-Path $assetsDir) {
     $pyInstallerArgs += @("--add-data", "assets;assets")
+}
+
+$iconPath = Join-Path $PSScriptRoot "assets\app_icon.ico"
+if (Test-Path $iconPath) {
+    $pyInstallerArgs += @("--icon", $iconPath)
 }
 
 $pyInstallerArgs += "app_main.py"

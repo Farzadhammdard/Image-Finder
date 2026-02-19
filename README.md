@@ -1,8 +1,19 @@
 # Image Finder
 
-Image similarity search for CNC workflows (optimized for black/white pattern matching).
+Image and DXF similarity search for CNC workflows (optimized for black/white pattern matching).
+Current release version: `v-4.0.0`
+
+Search stack now includes:
+- OpenCV handcrafted features
+- OCR text reranking
+- AI image embeddings (CLIP via `sentence-transformers`)
+- FAISS approximate candidate search
+- DXF parser/rasterizer (`ezdxf`) for shape matching
+- PySide6 desktop UI
 
 ## Download And Install (For End Users)
+
+طراحی شده توسط انجینیر احمد فرزاد همدرد
 
 1. Open your repository `Releases` page:
    `https://github.com/<YOUR_USERNAME>/<YOUR_REPO>/releases`
@@ -19,6 +30,10 @@ pip install -r requirements.txt
 python -m image_finder.cli gui
 ```
 
+Optional:
+- Set model name with env var `IMAGE_FINDER_EMBED_MODEL` (default: `clip-ViT-B-32`)
+- First embedding-enabled run may download model weights
+
 ## Build Windows EXE
 
 ```powershell
@@ -26,13 +41,24 @@ python -m image_finder.cli gui
 ```
 
 Output:
-`dist_v3\ImageFinder\ImageFinder.exe`
+`dist_v4\ImageFinder\ImageFinder.exe`
 
 If folder is locked (app running), use an alternate output:
 
 ```powershell
-.\build_windows_exe.ps1 -DistPath dist_v3_alt -WorkPath build_v3_alt
+.\build_windows_exe.ps1 -DistPath dist_v4_alt -WorkPath build_v4_alt
 ```
+
+## Build Test Package (Before Installer)
+
+Use this to test app first without installer:
+
+```powershell
+.\build_windows_test_package.ps1
+```
+
+Output:
+`installer\output\ImageFinder-v-4.0.0-test.zip`
 
 ## Build Windows Installer (Setup.exe)
 
@@ -49,7 +75,7 @@ Output:
 If EXE is in another folder:
 
 ```powershell
-.\build_windows_installer.ps1 -SourceDistDir "dist_v3_alt\ImageFinder"
+.\build_windows_installer.ps1 -SourceDistDir "dist_v4_alt\ImageFinder"
 ```
 
 ## Publish On GitHub (First Time)
@@ -68,7 +94,7 @@ git push -u origin main
 This repo includes:
 `\.github\workflows\windows-release.yml`
 
-When you push a tag like `v3.0.0`, GitHub Actions will:
+When you push a tag like `v-4.0.0`, GitHub Actions will:
 - Build `ImageFinder.exe`
 - Build `ImageFinderSetup.exe`
 - Attach both files to the GitHub Release automatically
@@ -76,8 +102,8 @@ When you push a tag like `v3.0.0`, GitHub Actions will:
 Release command:
 
 ```powershell
-git tag v3.0.0
-git push origin v3.0.0
+git tag v-4.0.0
+git push origin v-4.0.0
 ```
 
 ## Index Location
@@ -86,3 +112,8 @@ Default index path:
 `%LOCALAPPDATA%\ImageFinder\index_data`
 
 This keeps app data writable after normal installation in Program Files.
+
+Embedding files stored in the same index folder:
+- `embeddings.npy`
+- `embeddings_meta.json`
+- `embeddings.faiss`

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 import threading
 import time
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 
-from .features import is_image_file
-from .indexer import INDEX_FEATURES_FILE, INDEX_HASHES_FILE, INDEX_PATHS_FILE, build_index
+import numpy as np
+
+from .features import is_supported_file, load_preview_gray
+from .indexer import (
+    INDEX_EMBEDDINGS_FILE,
+    INDEX_EMBEDDINGS_META_FILE,
+    INDEX_FAISS_FILE,
+    INDEX_FEATURES_FILE,
+    INDEX_HASHES_FILE,
+    INDEX_PATHS_FILE,
+    build_index,
+)
 from .search import (
     LoadedIndex,
     SearchContext,
@@ -21,168 +28,68 @@ from .search import (
 from .text_search import TextSearchCache
 
 try:
-    from PIL import Image, ImageTk
-except Exception:  # pragma: no cover - optional dependency at runtime
-    Image = None  # type: ignore[assignment]
-    ImageTk = None  # type: ignore[assignment]
+    from PySide6.QtCore import QObject, QSize, QThread, Qt, Signal
+    from PySide6.QtGui import QAction, QDesktopServices, QIcon, QImage, QPixmap
+    from PySide6.QtWidgets import (
+        QApplication,
+        QCheckBox,
+        QComboBox,
+        QFileDialog,
+        QFrame,
+        QHBoxLayout,
+        QLabel,
+        QListWidget,
+        QListWidgetItem,
+        QMainWindow,
+        QMessageBox,
+        QProgressBar,
+        QPushButton,
+        QSpinBox,
+        QStatusBar,
+        QVBoxLayout,
+        QWidget,
+    )
 
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-
-    DND_ENABLED = True
-except Exception:  # pragma: no cover - optional dependency at runtime
-    DND_FILES = ""
-    TkinterDnD = None  # type: ignore[assignment]
-    DND_ENABLED = False
+    QT_AVAILABLE = True
+except Exception:  # pragma: no cover - optional runtime dependency
+    QObject = object  # type: ignore[assignment]
+    QThread = object  # type: ignore[assignment]
+    Signal = lambda *args, **kwargs: None  # type: ignore[assignment]
+    QApplication = None  # type: ignore[assignment]
+    QMainWindow = object  # type: ignore[assignment]
+    QT_AVAILABLE = False
 
 
 APP_DIR_NAME = "ImageFinder"
-APP_VERSION = "3"
-AUTHOR_CREDIT = "\u0637\u0631\u0627\u062d\u06cc \u0634\u062f\u0647 \u062a\u0648\u0633\u0637 \u0627\u062d\u0645\u062f \u0641\u0631\u0632\u0627\u062f \u0647\u0645\u062f\u0631\u062f"
-HEADER_ICON = "⌕"
-CONTROLS_ICON = "⚙"
-RESULTS_ICON = "▣"
-BUTTON_SELECT_ICON = "▤"
-BUTTON_REBUILD_ICON = "↻"
-ROOT_BG = "#0d0d0d"
-PANEL_BG = "#141414"
-PANEL_SOFT = "#1d1d1d"
-PANEL_BORDER = "#3f3f3f"
-DROP_BG = "#101010"
-DROP_BORDER = "#5b5b5b"
-TEXT_MAIN = "#f3f3f3"
-TEXT_MUTED = "#c4c4c4"
-ACCENT = "#2f2f2f"
-ACCENT_DARK = "#1f1f1f"
-ACCENT_SOFT = "#2a2a2a"
-SUCCESS = "#ffffff"
-SUCCESS_SOFT = "#2a2a2a"
-WARNING = "#ededed"
-WARNING_SOFT = "#262626"
-ERROR = "#f6f6f6"
-ERROR_SOFT = "#2e2e2e"
-RESULTS_BG = "#0b0b0b"
-RESULTS_CARD_BG = "#161616"
-RESULTS_CARD_BORDER = "#444444"
-RESULTS_CARD_TEXT = "#f4f4f4"
-RESULTS_CARD_SUBTEXT = "#c8c8c8"
-RESULTS_THUMB_BG = "#222222"
+ICON_RELATIVE_PATH = Path("assets") / "app_icon.ico"
 LOGO_RELATIVE_PATH = Path("assets") / "app_logo.png"
 
-LANGUAGE_LABELS = {"fa": "فارسی", "en": "English"}
-LANGUAGE_BY_LABEL = {label: code for code, label in LANGUAGE_LABELS.items()}
-DEFAULT_LANGUAGE = "fa"
-
-UI_TEXTS: dict[str, dict[str, str]] = {
-    "fa": {
-        "app_title": "ایمیج فایندر v3",
-        "language_label": "زبان",
-        "language_busy_warning": "هنوز یک عملیات در حال اجراست. بعد از پایان عملیات زبان را عوض کنید.",
-        "header_title": "جستجوی تصویر CNC",
-        "header_subtitle": "عکس مرجع را رها کنید تا شباهت تصویری و متن OCR در ایندکس دسکتاپ بررسی شود.",
-        "controls_title": "کنترل جستجو و ایندکس",
-        "controls_subtitle": "عکس را انتخاب یا رها کنید، سپس کارت‌های رتبه‌بندی‌شده را ببینید.",
-        "drop_enabled": "عکس را اینجا رها کنید\nیا روی انتخاب عکس بزنید",
-        "drop_disabled": "درگ‌ودرآپ در دسترس نیست.\nاز انتخاب عکس استفاده کنید",
-        "select_image": "انتخاب عکس",
-        "rebuild_index": "بازسازی ایندکس دسکتاپ",
-        "status_caption": "وضعیت",
-        "index_path": "مسیر ایندکس: {index_dir}",
-        "results_title": "نتایج جستجو",
-        "results_subtitle": "کارت‌ها بر اساس شباهت چیده می‌شوند.",
-        "empty_hint": "کارت‌های مشابه اینجا نمایش داده می‌شود.",
-        "empty_start": "برای شروع جستجو، عکس را انتخاب یا رها کنید.",
-        "empty_searching": "در حال جستجو، لطفا صبر کنید...",
-        "empty_rebuilding": "در حال ساخت ایندکس...",
-        "empty_ready": "ایندکس آماده است. یک عکس برای جستجو رها کنید.",
-        "empty_failed": "عملیات ناموفق بود.",
-        "empty_no_results": "تصویر مشابهی پیدا نشد.",
-        "status_index_missing": "ایندکس پیدا نشد. روی بازسازی ایندکس دسکتاپ بزنید.",
-        "metrics_index_missing": "ساخت اولیه ممکن است زمان‌بر باشد. دفعات بعدی سریع‌تر است.",
-        "status_ready": "آماده",
-        "metrics_ready_with_text": "عکس مرجع را رها کنید. متن داخل عکس هم بررسی می‌شود.",
-        "metrics_ready_visual_only": "عکس مرجع را برای جستجو رها کنید.",
-        "status_searching": "در حال جستجو...",
-        "status_search_done": "انجام شد ({count} نتیجه)",
-        "status_rebuilding": "در حال ساخت ایندکس دسکتاپ...",
-        "status_rebuild_done": "ایندکس آماده است ({indexed} تصویر)",
-        "status_failed": "عملیات ناموفق بود",
-        "err_index_missing": "ایندکس پیدا نشد. ابتدا ایندکس را بسازید.",
-        "err_file_missing": "فایل پیدا نشد:\n{path}",
-        "err_desktop_missing": "مسیر دسکتاپ پیدا نشد:\n{desktop}",
-        "err_unsupported_image": "فرمت فایل تصویر پشتیبانی نمی‌شود:\n{path}",
-        "dialog_pick_image": "انتخاب عکس مرجع",
-        "filetype_images": "فایل‌های تصویر",
-        "filetype_all": "همه فایل‌ها",
-        "metrics_rebuild_progress": "پردازش: {processed}/{total}   استفاده مجدد: {reused}   رد شده: {failed}",
-        "metrics_scanning": "در حال اسکن فایل‌ها...",
-        "metrics_rebuild_done": "پایان در {elapsed:.1f} ثانیه   ایندکس‌شده: {indexed}   استفاده مجدد: {reused}   رد شده: {failed}",
-        "metrics_search_with_rerank": "زمان جستجو: {elapsed:.3f} ثانیه   متن OCR: {text}",
-        "metrics_search_with_ocr": "زمان جستجو: {elapsed:.3f} ثانیه   متن OCR شناسایی شد: {text}",
-        "metrics_search_visual_only": "زمان جستجو: {elapsed:.3f} ثانیه   کوئری: {query}",
-        "dialog_rebuild_done": "ساخت ایندکس کامل شد.\nایندکس‌شده: {indexed}\nاستفاده مجدد: {reused}\nرد شده: {failed}\nزمان: {elapsed:.1f} ثانیه",
-        "card_rank": "نتیجه {rank}",
-        "card_no_preview": "بدون پیش‌نمایش",
-        "card_ocr": "متن OCR: {text}",
-        "card_open": "باز کردن فایل",
+THEMES: dict[str, dict[str, str]] = {
+    "Dark": {
+        "bg": "#0b0f15",
+        "panel": "#151b24",
+        "border": "#2d3746",
+        "text": "#ebeff5",
+        "muted": "#9ba7ba",
+        "accent": "#1f8bff",
+        "danger": "#ff7d7d",
+        "drop": "#101722",
     },
-    "en": {
-        "app_title": "Image Finder v3",
-        "language_label": "Language",
-        "language_busy_warning": "An operation is still running. Change language after it finishes.",
-        "header_title": "CNC Image Search",
-        "header_subtitle": "Drop a reference image to match visual similarity and OCR text inside your desktop index.",
-        "controls_title": "Search And Index Controls",
-        "controls_subtitle": "Pick or drop an image, then review ranked result cards.",
-        "drop_enabled": "Drop image here\nor click Select Image",
-        "drop_disabled": "Drag and drop is unavailable.\nUse Select Image.",
-        "select_image": "Select Image",
-        "rebuild_index": "Rebuild Desktop Index",
-        "status_caption": "Status",
-        "index_path": "Index path: {index_dir}",
-        "results_title": "Search Results",
-        "results_subtitle": "Cards are sorted by similarity.",
-        "empty_hint": "Similar cards will appear here.",
-        "empty_start": "To start searching, choose or drop an image.",
-        "empty_searching": "Searching... please wait.",
-        "empty_rebuilding": "Building index...",
-        "empty_ready": "Index is ready. Drop an image to search.",
-        "empty_failed": "Operation failed.",
-        "empty_no_results": "No similar images found.",
-        "status_index_missing": "Index not found. Click Rebuild Desktop Index.",
-        "metrics_index_missing": "First build may take time. Next runs are faster.",
-        "status_ready": "Ready",
-        "metrics_ready_with_text": "Drop a reference image. OCR text will also be checked.",
-        "metrics_ready_visual_only": "Drop a reference image to start searching.",
-        "status_searching": "Searching...",
-        "status_search_done": "Done ({count} results)",
-        "status_rebuilding": "Building desktop index...",
-        "status_rebuild_done": "Index is ready ({indexed} images)",
-        "status_failed": "Operation failed",
-        "err_index_missing": "Index not found. Build the index first.",
-        "err_file_missing": "File not found:\n{path}",
-        "err_desktop_missing": "Desktop path not found:\n{desktop}",
-        "err_unsupported_image": "Unsupported image format:\n{path}",
-        "dialog_pick_image": "Select Reference Image",
-        "filetype_images": "Image files",
-        "filetype_all": "All files",
-        "metrics_rebuild_progress": "Processed: {processed}/{total}   Reused: {reused}   Failed: {failed}",
-        "metrics_scanning": "Scanning files...",
-        "metrics_rebuild_done": "Finished in {elapsed:.1f}s   Indexed: {indexed}   Reused: {reused}   Failed: {failed}",
-        "metrics_search_with_rerank": "Search time: {elapsed:.3f}s   OCR text: {text}",
-        "metrics_search_with_ocr": "Search time: {elapsed:.3f}s   OCR detected: {text}",
-        "metrics_search_visual_only": "Search time: {elapsed:.3f}s   Query: {query}",
-        "dialog_rebuild_done": "Index build completed.\nIndexed: {indexed}\nReused: {reused}\nFailed: {failed}\nTime: {elapsed:.1f}s",
-        "card_rank": "Result {rank}",
-        "card_no_preview": "No preview",
-        "card_ocr": "OCR text: {text}",
-        "card_open": "Open File",
+    "Light": {
+        "bg": "#f2f5f9",
+        "panel": "#ffffff",
+        "border": "#d5dde7",
+        "text": "#1c2430",
+        "muted": "#526070",
+        "accent": "#216bdf",
+        "danger": "#d43d3d",
+        "drop": "#edf3fb",
     },
 }
 
 
 def _truncate(text: str, max_len: int = 120) -> str:
-    compact = re.sub(r"\s+", " ", text).strip()
+    compact = " ".join(text.split())
     if len(compact) <= max_len:
         return compact
     return compact[: max_len - 3] + "..."
@@ -194,22 +101,110 @@ def _resource_path(relative_path: Path) -> Path:
     return Path(__file__).resolve().parent.parent / relative_path
 
 
+def _load_app_icon():
+    for candidate in (ICON_RELATIVE_PATH, LOGO_RELATIVE_PATH):
+        icon_path = _resource_path(candidate)
+        if not icon_path.exists():
+            continue
+        icon = QIcon(str(icon_path))
+        if icon.isNull():
+            continue
+        return icon
+    return None
+
+
+def _build_styles(theme_name: str) -> str:
+    palette = THEMES.get(theme_name, THEMES["Dark"])
+    return f"""
+    QMainWindow {{
+        background: {palette['bg']};
+        color: {palette['text']};
+    }}
+    QWidget {{
+        color: {palette['text']};
+        font-size: 13px;
+    }}
+    QLabel#muted {{
+        color: {palette['muted']};
+    }}
+    QFrame#dropZone {{
+        border: 2px dashed {palette['border']};
+        border-radius: 10px;
+        background: {palette['drop']};
+    }}
+    QFrame#optionBar, QFrame#actionBar {{
+        border: 1px solid {palette['border']};
+        border-radius: 10px;
+        background: {palette['panel']};
+    }}
+    QPushButton {{
+        background: {palette['accent']};
+        color: white;
+        border: 1px solid {palette['accent']};
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-weight: 600;
+    }}
+    QPushButton:disabled {{
+        background: #6d7787;
+        border-color: #6d7787;
+        color: #d7deea;
+    }}
+    QListWidget {{
+        background: {palette['panel']};
+        border: 1px solid {palette['border']};
+        border-radius: 8px;
+        padding: 10px;
+    }}
+    QListWidget::item {{
+        border: 0;
+        margin: 0;
+        padding: 0;
+    }}
+    QFrame#resultCard {{
+        border: 1px solid {palette['border']};
+        border-radius: 12px;
+        background: {palette['panel']};
+    }}
+    QLabel#previewBox {{
+        border: 1px solid {palette['border']};
+        border-radius: 10px;
+        background: {palette['drop']};
+    }}
+    QLabel#scoreBadge {{
+        border: 1px solid {palette['accent']};
+        border-radius: 9px;
+        padding: 4px 8px;
+        color: {palette['accent']};
+        font-weight: 700;
+    }}
+    QProgressBar {{
+        border: 1px solid {palette['border']};
+        border-radius: 7px;
+        text-align: center;
+        background: {palette['panel']};
+        min-height: 18px;
+    }}
+    QProgressBar::chunk {{
+        background: {palette['accent']};
+        border-radius: 7px;
+    }}
+    QComboBox, QSpinBox {{
+        border: 1px solid {palette['border']};
+        border-radius: 6px;
+        padding: 5px;
+        background: {palette['panel']};
+    }}
+    """
+
+
 def _get_default_index_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA")
     root = Path(base) if base else Path.home() / "AppData" / "Local"
     return root / APP_DIR_NAME / "index_data"
 
 
-def _parse_dropped_paths(data: str) -> list[Path]:
-    paths: list[Path] = []
-    for match in re.finditer(r"{([^}]*)}|(\S+)", data):
-        raw = match.group(1) or match.group(2)
-        if raw:
-            paths.append(Path(raw))
-    return paths
-
-
-def _index_signature(index_dir: Path) -> tuple[int, int, int] | None:
+def _index_signature(index_dir: Path) -> tuple[int, ...] | None:
     required = [
         index_dir / INDEX_FEATURES_FILE,
         index_dir / INDEX_HASHES_FILE,
@@ -217,513 +212,289 @@ def _index_signature(index_dir: Path) -> tuple[int, int, int] | None:
     ]
     if not all(path.exists() for path in required):
         return None
-    return tuple(int(path.stat().st_mtime_ns) for path in required)  # type: ignore[return-value]
+
+    optional = [
+        index_dir / INDEX_EMBEDDINGS_FILE,
+        index_dir / INDEX_EMBEDDINGS_META_FILE,
+        index_dir / INDEX_FAISS_FILE,
+    ]
+    signature_files = required + [path for path in optional if path.exists()]
+    return tuple(int(path.stat().st_mtime_ns) for path in signature_files)
 
 
-class ImageFinderApp:
-    def __init__(self, root: tk.Tk, index_dir: Path, top_k: int) -> None:
-        self.root = root
+def _open_file(path: Path) -> None:
+    if not path.exists():
+        return
+    if hasattr(os, "startfile"):
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return
+    QDesktopServices.openUrl(path.as_uri())  # pragma: no cover - non-windows fallback
+
+
+class SearchWorker(QObject):
+    finished = Signal(object, object, float)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        index_loader,
+        query_image: Path,
+        top_k: int,
+        text_cache: TextSearchCache,
+        enable_text_rerank: bool,
+        enable_ai_embedding: bool,
+        robust_mode: bool,
+    ) -> None:
+        super().__init__()
+        self._index_loader = index_loader
+        self._query_image = query_image
+        self._top_k = top_k
+        self._text_cache = text_cache
+        self._enable_text_rerank = enable_text_rerank
+        self._enable_ai_embedding = enable_ai_embedding
+        self._robust_mode = robust_mode
+
+    def run(self) -> None:
+        started = time.perf_counter()
+        try:
+            index = self._index_loader()
+            results, context = find_similar_in_index_with_context(
+                index=index,
+                query_image=self._query_image,
+                top_k=self._top_k,
+                text_cache=self._text_cache,
+                text_rerank_pool=180 if self._robust_mode else 120,
+                enable_text_rerank=self._enable_text_rerank,
+                enable_ai_embedding=self._enable_ai_embedding,
+                query_variants=6 if self._robust_mode else 3,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        elapsed = time.perf_counter() - started
+        self.finished.emit(results, context, elapsed)
+
+
+class RebuildWorker(QObject):
+    progress = Signal(int, int, int, int)
+    finished = Signal(object, float)
+    failed = Signal(str)
+
+    def __init__(self, index_dir: Path, folders: list[Path]) -> None:
+        super().__init__()
+        self._index_dir = index_dir
+        self._folders = folders
+
+    def _on_progress(self, processed: int, total: int, reused: int, failed: int) -> None:
+        self.progress.emit(processed, total, reused, failed)
+
+    def run(self) -> None:
+        started = time.perf_counter()
+        try:
+            self._index_dir.mkdir(parents=True, exist_ok=True)
+            stats = build_index(
+                folders=self._folders,
+                output_dir=self._index_dir,
+                progress_callback=self._on_progress,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        elapsed = time.perf_counter() - started
+        self.finished.emit(stats, elapsed)
+
+
+class ImageFinderWindow(QMainWindow):
+    def __init__(self, index_dir: Path, top_k: int) -> None:
+        super().__init__()
         self.index_dir = index_dir
-        self.top_k = top_k
-        self.language_code = DEFAULT_LANGUAGE
+        self.default_top_k = top_k
+        self.compare_folders: list[Path] = [Path.home() / "Desktop"]
 
         self.is_busy = False
         self.cached_index: LoadedIndex | None = None
-        self.cached_signature: tuple[int, int, int] | None = None
+        self.cached_signature: tuple[int, ...] | None = None
         self.cache_lock = threading.Lock()
         self.text_cache = TextSearchCache(index_dir=self.index_dir)
 
-        self.thumbnail_refs: list[object] = []
-        self.logo_ref: object | None = None
-        self.empty_logo_ref: object | None = None
-        self.last_results: list[SearchResult] = []
-        self.last_canvas_width = 0
+        self._thread: QThread | None = None
+        self._worker: QObject | None = None
 
+        self.setWindowTitle("Image Finder v-4.0.0")
+        app_icon = _load_app_icon()
+        if app_icon is not None:
+            self.setWindowIcon(app_icon)
+
+        self.resize(1350, 860)
+        self.setMinimumSize(1040, 680)
+        self.setAcceptDrops(True)
         self._build_ui()
+        self._apply_theme("Dark")
         self._refresh_status()
-
-    def _tr(self, key: str, **kwargs: object) -> str:
-        table = UI_TEXTS.get(self.language_code, UI_TEXTS["en"])
-        fallback = UI_TEXTS["en"]
-        template = table.get(key, fallback.get(key, key))
-        try:
-            return template.format(**kwargs)
-        except Exception:
-            return template
-
-    def _app_title(self) -> str:
-        return self._tr("app_title")
-
-    def _configure_styles(self) -> None:
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-
-        style.configure("Root.TFrame", background=ROOT_BG)
-        style.configure(
-            "Title.TLabel",
-            background=PANEL_BG,
-            foreground=TEXT_MAIN,
-            font=("Bahnschrift SemiBold", 19),
-        )
-        style.configure(
-            "Subtitle.TLabel",
-            background=PANEL_BG,
-            foreground=TEXT_MUTED,
-            font=("Segoe UI", 10),
-        )
-        style.configure(
-            "Primary.TButton",
-            font=("Bahnschrift SemiBold", 10),
-            foreground="#f8f8f8",
-            background=ACCENT,
-            bordercolor=ACCENT,
-            focuscolor=ACCENT,
-            padding=(12, 8),
-        )
-        style.map(
-            "Primary.TButton",
-            background=[("active", ACCENT_DARK), ("disabled", "#4b4b4b")],
-            bordercolor=[("active", ACCENT_DARK), ("disabled", "#4b4b4b")],
-            foreground=[("disabled", "#9f9f9f")],
-        )
-        style.configure(
-            "Ghost.TButton",
-            font=("Segoe UI Semibold", 10),
-            foreground=TEXT_MAIN,
-            background=PANEL_SOFT,
-            bordercolor=PANEL_BORDER,
-            focuscolor=PANEL_SOFT,
-            padding=(12, 8),
-        )
-        style.map(
-            "Ghost.TButton",
-            background=[("active", "#2a2a2a"), ("disabled", "#1f1f1f")],
-            foreground=[("disabled", "#9d9d9d")],
-        )
-        style.configure(
-            "Card.TButton",
-            font=("Bahnschrift SemiBold", 9),
-            foreground="#f8f8f8",
-            background=ACCENT,
-            bordercolor=ACCENT,
-            focuscolor=ACCENT,
-            padding=(10, 6),
-        )
-        style.map(
-            "Card.TButton",
-            background=[("active", ACCENT_DARK), ("disabled", "#4b4b4b")],
-            bordercolor=[("active", ACCENT_DARK), ("disabled", "#4b4b4b")],
-        )
-        style.configure(
-            "Search.Horizontal.TProgressbar",
-            troughcolor="#1b1b1b",
-            background=ACCENT,
-            lightcolor=ACCENT,
-            darkcolor=ACCENT,
-            thickness=11,
-            bordercolor="#3b3b3b",
-        )
-        style.configure(
-            "TCombobox",
-            fieldbackground=PANEL_SOFT,
-            background=PANEL_SOFT,
-            foreground=TEXT_MAIN,
-            arrowcolor=TEXT_MAIN,
-            bordercolor=PANEL_BORDER,
-            lightcolor=PANEL_BORDER,
-            darkcolor=PANEL_BORDER,
-        )
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", PANEL_SOFT)],
-            background=[("readonly", PANEL_SOFT)],
-            foreground=[("readonly", TEXT_MAIN)],
-        )
-
-    def _make_card(self, parent: tk.Widget) -> tk.Frame:
-        return tk.Frame(
-            parent,
-            bg=PANEL_BG,
-            highlightthickness=1,
-            highlightbackground=PANEL_BORDER,
-            highlightcolor=PANEL_BORDER,
-            bd=0,
-        )
 
     def _build_ui(self) -> None:
-        self.root.title(self._app_title())
-        self.root.geometry("1360x820")
-        self.root.minsize(1040, 680)
-        self.root.configure(bg=ROOT_BG)
-        self._configure_styles()
+        root = QWidget(self)
+        self.setCentralWidget(root)
 
-        shell = ttk.Frame(self.root, padding=18, style="Root.TFrame")
-        shell.pack(fill=tk.BOTH, expand=True)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
-        header = self._make_card(shell)
-        header.pack(fill=tk.X)
+        self.title_label = QLabel("Image Finder | Smart Line Search")
+        self.title_label.setStyleSheet("font-size: 24px; font-weight: 700;")
+        layout.addWidget(self.title_label)
 
-        header_top = tk.Frame(header, bg=PANEL_BG)
-        header_top.pack(fill=tk.X, padx=18, pady=(14, 0))
-
-        title = ttk.Label(header_top, text=f"{HEADER_ICON} {self._tr('header_title')}", style="Title.TLabel")
-        title.pack(side=tk.LEFT)
-
-        language_shell = tk.Frame(header_top, bg=PANEL_BG)
-        language_shell.pack(side=tk.RIGHT, padx=(0, 10), pady=(4, 0))
-        language_label = tk.Label(
-            language_shell,
-            text=self._tr("language_label"),
-            bg=PANEL_BG,
-            fg=TEXT_MUTED,
-            font=("Segoe UI Semibold", 9),
+        self.subtitle_label = QLabel(
+            "Find similar image and DXF shapes, even with color changes, blur, and lower quality."
         )
-        language_label.pack(side=tk.LEFT, padx=(0, 6))
+        self.subtitle_label.setObjectName("muted")
+        layout.addWidget(self.subtitle_label)
 
-        self.language_var = tk.StringVar(value=LANGUAGE_LABELS[self.language_code])
-        self.language_combo = ttk.Combobox(
-            language_shell,
-            width=10,
-            state="readonly",
-            textvariable=self.language_var,
-            values=[LANGUAGE_LABELS["fa"], LANGUAGE_LABELS["en"]],
-        )
-        self.language_combo.pack(side=tk.LEFT)
-        self.language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+        self.index_label = QLabel("")
+        self.index_label.setObjectName("muted")
+        layout.addWidget(self.index_label)
 
-        logo = self._load_logo(width=72, height=72)
-        if logo is not None:
-            logo_label = tk.Label(header_top, image=logo, bg=PANEL_BG, bd=0)
-            logo_label.pack(side=tk.RIGHT, padx=(0, 2), pady=(0, 6))
-            self.logo_ref = logo
+        self.source_label = QLabel("")
+        self.source_label.setObjectName("muted")
+        layout.addWidget(self.source_label)
 
-        subtitle = ttk.Label(header, text=self._tr("header_subtitle"), style="Subtitle.TLabel")
-        subtitle.pack(anchor=tk.W, padx=18, pady=(0, 6))
+        action_bar = QFrame()
+        action_bar.setObjectName("actionBar")
+        action_layout = QHBoxLayout(action_bar)
+        action_layout.setContentsMargins(10, 10, 10, 10)
+        action_layout.setSpacing(8)
+        layout.addWidget(action_bar)
 
-        header_credit = tk.Label(
-            header,
-            text=AUTHOR_CREDIT,
-            bg=PANEL_BG,
-            fg=TEXT_MUTED,
-            font=("Segoe UI", 9),
-        )
-        header_credit.pack(anchor=tk.W, padx=18, pady=(0, 14))
+        self.select_button = QPushButton("Select Query Image")
+        self.select_button.clicked.connect(self._pick_file)
+        action_layout.addWidget(self.select_button)
 
-        content = tk.Frame(shell, bg=ROOT_BG)
-        content.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        self.rebuild_button = QPushButton("Rebuild Index")
+        self.rebuild_button.clicked.connect(self._start_rebuild)
+        action_layout.addWidget(self.rebuild_button)
 
-        controls = self._make_card(content)
-        controls.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
-        controls.configure(width=350)
-        controls.pack_propagate(False)
+        self.pick_folder_button = QPushButton("Choose Compare Folder")
+        self.pick_folder_button.clicked.connect(self._choose_compare_folder)
+        action_layout.addWidget(self.pick_folder_button)
 
-        controls_title = tk.Label(
-            controls,
-            text=f"{CONTROLS_ICON} {self._tr('controls_title')}",
-            bg=PANEL_BG,
-            fg=TEXT_MAIN,
-            font=("Bahnschrift SemiBold", 12),
-        )
-        controls_title.pack(anchor=tk.W, padx=16, pady=(14, 4))
+        self.use_desktop_button = QPushButton("Use Desktop Folder")
+        self.use_desktop_button.clicked.connect(self._use_desktop_folder)
+        action_layout.addWidget(self.use_desktop_button)
 
-        controls_subtitle = tk.Label(
-            controls,
-            text=self._tr("controls_subtitle"),
-            bg=PANEL_BG,
-            fg=TEXT_MUTED,
-            font=("Segoe UI", 9),
-        )
-        controls_subtitle.pack(anchor=tk.W, padx=16, pady=(0, 4))
+        option_bar = QFrame()
+        option_bar.setObjectName("optionBar")
+        option_layout = QHBoxLayout(option_bar)
+        option_layout.setContentsMargins(10, 10, 10, 10)
+        option_layout.setSpacing(10)
+        layout.addWidget(option_bar)
 
-        controls_credit = tk.Label(
-            controls,
-            text=AUTHOR_CREDIT,
-            bg=PANEL_BG,
-            fg=TEXT_MUTED,
-            font=("Segoe UI", 8),
-        )
-        controls_credit.pack(anchor=tk.W, padx=16, pady=(0, 10))
+        option_layout.addWidget(QLabel("Theme"))
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Dark", "Light"])
+        self.theme_combo.currentTextChanged.connect(self._apply_theme)
+        option_layout.addWidget(self.theme_combo)
 
-        drop_key = "drop_enabled" if DND_ENABLED else "drop_disabled"
-        self.drop_zone = tk.Label(
-            controls,
-            text=self._tr(drop_key),
-            relief=tk.FLAT,
-            bd=0,
-            bg=DROP_BG,
-            fg=TEXT_MAIN,
-            font=("Bahnschrift SemiBold", 13),
-            height=5,
-            highlightthickness=2,
-            highlightbackground=DROP_BORDER,
-            highlightcolor=ACCENT,
-            justify=tk.CENTER,
-            wraplength=300,
-        )
-        self.drop_zone.pack(fill=tk.X, padx=16, pady=16)
-        if DND_ENABLED:
-            try:
-                self.drop_zone.drop_target_register(DND_FILES)
-                self.drop_zone.dnd_bind("<<Drop>>", self._on_drop)
-            except Exception:
-                self.drop_zone.configure(text=self._tr("drop_disabled"))
+        option_layout.addWidget(QLabel("Top K"))
+        self.top_k_spin = QSpinBox()
+        self.top_k_spin.setRange(1, 100)
+        self.top_k_spin.setValue(max(1, int(self.default_top_k)))
+        option_layout.addWidget(self.top_k_spin)
 
-        action_row = tk.Frame(controls, bg=PANEL_BG)
-        action_row.pack(fill=tk.X, padx=16, pady=(0, 10))
+        self.ai_check = QCheckBox("AI Embedding")
+        self.ai_check.setChecked(True)
+        option_layout.addWidget(self.ai_check)
 
-        self.select_button = ttk.Button(
-            action_row,
-            text=f"{BUTTON_SELECT_ICON} {self._tr('select_image')}",
-            style="Primary.TButton",
-            command=self._pick_file,
-        )
-        self.select_button.pack(fill=tk.X)
+        self.ocr_check = QCheckBox("OCR Rerank")
+        self.ocr_check.setChecked(True)
+        option_layout.addWidget(self.ocr_check)
 
-        self.rebuild_button = ttk.Button(
-            action_row,
-            text=f"{BUTTON_REBUILD_ICON} {self._tr('rebuild_index')}",
-            style="Ghost.TButton",
-            command=self._start_rebuild,
-        )
-        self.rebuild_button.pack(fill=tk.X, pady=(8, 0))
+        self.robust_check = QCheckBox("Robust Mode")
+        self.robust_check.setChecked(True)
+        option_layout.addWidget(self.robust_check)
 
-        status_shell = tk.Frame(
-            controls,
-            bg=PANEL_SOFT,
-            highlightthickness=1,
-            highlightbackground=PANEL_BORDER,
-            highlightcolor=PANEL_BORDER,
-        )
-        status_shell.pack(fill=tk.X, padx=16, pady=(6, 8))
+        self.drag_check = QCheckBox("Enable Drag && Drop")
+        self.drag_check.setChecked(True)
+        option_layout.addWidget(self.drag_check)
 
-        self.status_var = tk.StringVar(value="")
-        status_caption = tk.Label(
-            status_shell,
-            text=self._tr("status_caption"),
-            bg=PANEL_SOFT,
-            fg=TEXT_MUTED,
-            font=("Segoe UI", 9),
-        )
-        status_caption.pack(anchor=tk.W, padx=10, pady=(10, 4))
+        option_layout.addStretch(1)
 
-        self.status_label = tk.Label(
-            status_shell,
-            textvariable=self.status_var,
-            bg=PANEL_SOFT,
-            fg=TEXT_MAIN,
-            font=("Bahnschrift SemiBold", 10),
-            padx=10,
-            pady=5,
-            anchor="w",
-        )
-        self.status_label.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.drop_zone = QFrame()
+        self.drop_zone.setObjectName("dropZone")
+        drop_layout = QVBoxLayout(self.drop_zone)
+        drop_layout.setContentsMargins(14, 14, 14, 14)
+        drop_layout.setSpacing(4)
+        drop_title = QLabel("Drop Zone")
+        drop_title.setStyleSheet("font-weight: 700; font-size: 14px;")
+        drop_layout.addWidget(drop_title)
+        self.drop_hint = QLabel("Drag an image or DXF file and drop it anywhere in this window to start search.")
+        self.drop_hint.setObjectName("muted")
+        self.drop_hint.setWordWrap(True)
+        drop_layout.addWidget(self.drop_hint)
+        layout.addWidget(self.drop_zone)
 
-        self.progress_var = tk.DoubleVar(value=0.0)
-        self.progress = ttk.Progressbar(
-            status_shell,
-            style="Search.Horizontal.TProgressbar",
-            orient=tk.HORIZONTAL,
-            mode="determinate",
-            variable=self.progress_var,
-            maximum=100.0,
-        )
-        self.progress.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        layout.addWidget(self.progress)
 
-        self.metrics_var = tk.StringVar(value="")
-        metrics = tk.Label(
-            status_shell,
-            textvariable=self.metrics_var,
-            bg=PANEL_SOFT,
-            fg=TEXT_MUTED,
-            font=("Segoe UI", 9),
-            anchor="w",
-            justify=tk.LEFT,
-            wraplength=304,
-        )
-        metrics.pack(fill=tk.X, padx=10, pady=(0, 12))
+        self.status_label = QLabel("Status: Ready")
+        self.status_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(self.status_label)
 
-        self.index_var = tk.StringVar(value=self._tr("index_path", index_dir=self.index_dir))
-        index_label = tk.Label(
-            controls,
-            textvariable=self.index_var,
-            bg=PANEL_BG,
-            fg=TEXT_MUTED,
-            font=("Segoe UI", 9),
-            anchor="w",
-            justify=tk.LEFT,
-            wraplength=314,
-        )
-        index_label.pack(fill=tk.X, padx=16, pady=(2, 14))
+        self.metrics_label = QLabel("")
+        self.metrics_label.setObjectName("muted")
+        layout.addWidget(self.metrics_label)
 
-        results_shell = self._make_card(content)
-        results_shell.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        results_shell.configure(
-            bg=RESULTS_BG,
-            highlightbackground=RESULTS_CARD_BORDER,
-            highlightcolor=RESULTS_CARD_BORDER,
-        )
+        self.results = QListWidget()
+        self.results.setSpacing(10)
+        self.results.setUniformItemSizes(False)
+        self.results.itemDoubleClicked.connect(self._open_result_item)
+        layout.addWidget(self.results, stretch=1)
 
-        results_head = tk.Frame(results_shell, bg=RESULTS_BG)
-        results_head.pack(fill=tk.X, padx=14, pady=(12, 6))
-        results_header = tk.Label(
-            results_head,
-            text=f"{RESULTS_ICON} {self._tr('results_title')}",
-            bg=RESULTS_BG,
-            fg=RESULTS_CARD_TEXT,
-            font=("Bahnschrift SemiBold", 12),
-        )
-        results_header.pack(anchor=tk.W)
+        status_bar = QStatusBar()
+        self.setStatusBar(status_bar)
+        self.statusBar().showMessage("Ready")
 
-        results_info = tk.Label(
-            results_head,
-            text=self._tr("results_subtitle"),
-            bg=RESULTS_BG,
-            fg=RESULTS_CARD_SUBTEXT,
-            font=("Segoe UI", 9),
-        )
-        results_info.pack(anchor=tk.W, pady=(2, 0))
+        quit_action = QAction("Exit", self)
+        quit_action.triggered.connect(self.close)
+        self.menuBar().addAction(quit_action)
 
-        results_credit = tk.Label(
-            results_head,
-            text=AUTHOR_CREDIT,
-            bg=RESULTS_BG,
-            fg=RESULTS_CARD_SUBTEXT,
-            font=("Segoe UI", 8),
-        )
-        results_credit.pack(anchor=tk.W, pady=(2, 0))
-
-        canvas_wrap = tk.Frame(results_shell, bg=RESULTS_BG)
-        canvas_wrap.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 10))
-
-        self.results_canvas = tk.Canvas(
-            canvas_wrap,
-            bg=RESULTS_BG,
-            highlightthickness=0,
-            borderwidth=0,
-            relief=tk.FLAT,
-        )
-        self.results_scroll = ttk.Scrollbar(canvas_wrap, orient=tk.VERTICAL, command=self.results_canvas.yview)
-        self.results_canvas.configure(yscrollcommand=self.results_scroll.set)
-        self.results_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.results_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.results_frame = tk.Frame(self.results_canvas, bg=RESULTS_BG)
-        self.results_window = self.results_canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
-        self.results_frame.bind("<Configure>", self._on_results_frame_configure)
-        self.results_canvas.bind("<Configure>", self._on_results_canvas_configure)
-
-        self._bind_mousewheel(self.results_canvas)
-        self._show_empty_results(self._tr("empty_start"))
-
-        footer = tk.Frame(
-            shell,
-            bg=PANEL_BG,
-            highlightthickness=1,
-            highlightbackground=PANEL_BORDER,
-            highlightcolor=PANEL_BORDER,
-        )
-        footer.pack(fill=tk.X, pady=(12, 0))
-
-        footer_credit = tk.Label(
-            footer,
-            text=AUTHOR_CREDIT,
-            bg=PANEL_BG,
-            fg=TEXT_MUTED,
-            font=("Segoe UI", 9),
-        )
-        footer_credit.pack(side=tk.LEFT, padx=12, pady=8)
-
-        footer_version = tk.Label(
-            footer,
-            text=f"Version {APP_VERSION}",
-            bg=PANEL_BG,
-            fg=TEXT_MAIN,
-            font=("Bahnschrift SemiBold", 10),
-        )
-        footer_version.pack(side=tk.RIGHT, padx=12, pady=8)
-
-    def _on_language_selected(self, _event: tk.Event | None = None) -> None:
-        selected = self.language_var.get().strip()
-        new_language = LANGUAGE_BY_LABEL.get(selected, self.language_code)
-        if new_language == self.language_code:
-            return
-        if self.is_busy:
-            self.language_var.set(LANGUAGE_LABELS[self.language_code])
-            messagebox.showwarning(self._app_title(), self._tr("language_busy_warning"))
-            return
-
-        previous_results = list(self.last_results)
-        self.language_code = new_language
-        self._rebuild_ui_for_language_change(previous_results)
-
-    def _rebuild_ui_for_language_change(self, previous_results: list[SearchResult]) -> None:
-        for child in self.root.winfo_children():
-            child.destroy()
-
-        self._build_ui()
-        self._refresh_status()
-        if previous_results:
-            self._render_result_cards(previous_results)
-
-    def _bind_mousewheel(self, widget: tk.Widget) -> None:
-        self.root.unbind_all("<MouseWheel>")
-        self.root.unbind_all("<Button-4>")
-        self.root.unbind_all("<Button-5>")
-
-        def _on_mousewheel(event: tk.Event) -> None:
-            if hasattr(event, "delta") and event.delta:
-                self.results_canvas.yview_scroll(int(-event.delta / 120), "units")
-            elif hasattr(event, "num") and event.num == 4:
-                self.results_canvas.yview_scroll(-1, "units")
-            elif hasattr(event, "num") and event.num == 5:
-                self.results_canvas.yview_scroll(1, "units")
-
-        widget.bind_all("<MouseWheel>", _on_mousewheel)
-        widget.bind_all("<Button-4>", _on_mousewheel)
-        widget.bind_all("<Button-5>", _on_mousewheel)
-
-    def _on_results_frame_configure(self, _event: tk.Event) -> None:
-        self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
-
-    def _on_results_canvas_configure(self, event: tk.Event) -> None:
-        self.results_canvas.itemconfigure(self.results_window, width=event.width)
-        if self.last_results and abs(event.width - self.last_canvas_width) >= 140:
-            self.last_canvas_width = event.width
-            self._render_result_cards(self.last_results)
+    def _apply_theme(self, theme_name: str) -> None:
+        self.setStyleSheet(_build_styles(theme_name))
 
     def _set_busy(self, value: bool) -> None:
         self.is_busy = value
-        state = tk.DISABLED if value else tk.NORMAL
-        self.select_button.configure(state=state)
-        self.rebuild_button.configure(state=state)
-        self.language_combo.configure(state="disabled" if value else "readonly")
-        self.root.configure(cursor="watch" if value else "")
+        state = not value
+        self.select_button.setEnabled(state)
+        self.rebuild_button.setEnabled(state)
+        self.pick_folder_button.setEnabled(state)
+        self.use_desktop_button.setEnabled(state)
+        self.theme_combo.setEnabled(state)
+        self.top_k_spin.setEnabled(state)
+        self.ai_check.setEnabled(state)
+        self.ocr_check.setEnabled(state)
+        self.robust_check.setEnabled(state)
+        self.drag_check.setEnabled(state)
+        self.setCursor(Qt.WaitCursor if value else Qt.ArrowCursor)
 
-    def _set_status(self, text: str, color: str = TEXT_MUTED) -> None:
-        self.status_var.set(text)
-        badge_bg = PANEL_SOFT
-        if color == SUCCESS:
-            badge_bg = SUCCESS_SOFT
-        elif color == ERROR:
-            badge_bg = ERROR_SOFT
-        elif color == ACCENT:
-            badge_bg = ACCENT_SOFT
-        elif color == WARNING:
-            badge_bg = WARNING_SOFT
-        self.status_label.configure(fg=color, bg=badge_bg)
+    def _set_status(self, text: str, error: bool = False) -> None:
+        danger = THEMES.get(self.theme_combo.currentText(), THEMES["Dark"])["danger"]
+        color = danger if error else THEMES.get(self.theme_combo.currentText(), THEMES["Dark"])["text"]
+        self.status_label.setStyleSheet(f"font-weight: 600; color: {color};")
+        self.status_label.setText(f"Status: {text}")
+        self.statusBar().showMessage(text)
 
     def _refresh_status(self) -> None:
-        signature = _index_signature(self.index_dir)
-        if signature is None:
-            self._set_status(self._tr("status_index_missing"), ERROR)
-            self.metrics_var.set(self._tr("metrics_index_missing"))
-            return
-
-        self._set_status(self._tr("status_ready"), SUCCESS)
-        if self.text_cache.available:
-            self.metrics_var.set(self._tr("metrics_ready_with_text"))
+        self.index_label.setText(f"Index path: {self.index_dir}")
+        self.source_label.setText(
+            "Compare folders: " + ", ".join(str(path) for path in self.compare_folders if path.exists())
+        )
+        if _index_signature(self.index_dir) is None:
+            self._set_status("Index not found. Click Rebuild Index.", error=True)
+            self.metrics_label.setText("First build can take time. Later searches will be faster.")
         else:
-            self.metrics_var.set(self._tr("metrics_ready_visual_only"))
+            self._set_status("Ready")
+            self.metrics_label.setText("Drop or select an image to start matching.")
 
     def _invalidate_cached_index(self) -> None:
         with self.cache_lock:
@@ -734,7 +505,7 @@ class ImageFinderApp:
     def _get_runtime_index(self) -> LoadedIndex:
         signature = _index_signature(self.index_dir)
         if signature is None:
-            raise FileNotFoundError(self._tr("err_index_missing"))
+            raise FileNotFoundError("Index not found. Build the index first.")
 
         with self.cache_lock:
             if self.cached_index is not None and self.cached_signature == signature:
@@ -745,418 +516,334 @@ class ImageFinderApp:
             self.cached_signature = signature
             return loaded
 
-    def _start_indeterminate_progress(self) -> None:
-        self.progress.configure(mode="indeterminate")
-        self.progress.start(13)
+    def _choose_compare_folder(self) -> None:
+        if self.is_busy:
+            return
+        chosen = QFileDialog.getExistingDirectory(self, "Choose compare folder", str(Path.home()))
+        if not chosen:
+            return
+        folder = Path(chosen)
+        if not folder.exists():
+            QMessageBox.critical(self, "Image Finder", f"Folder not found:\n{folder}")
+            return
+        self.compare_folders = [folder]
+        self._refresh_status()
 
-    def _stop_progress(self) -> None:
-        self.progress.stop()
-        self.progress.configure(mode="determinate")
-        self.progress_var.set(0.0)
+    def _use_desktop_folder(self) -> None:
+        if self.is_busy:
+            return
+        desktop = Path.home() / "Desktop"
+        self.compare_folders = [desktop]
+        self._refresh_status()
 
     def _pick_file(self) -> None:
         if self.is_busy:
             return
-        file_path = filedialog.askopenfilename(
-            title=self._tr("dialog_pick_image"),
-            filetypes=[
-                (self._tr("filetype_images"), "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"),
-                (self._tr("filetype_all"), "*.*"),
-            ],
+        file_path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Select query file",
+            "",
+            "Supported files (*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp *.dxf);;All files (*.*)",
         )
         if not file_path:
             return
         self._start_search(Path(file_path))
 
-    def _on_drop(self, event: tk.Event) -> None:
+    def _start_search(self, image_path: Path) -> None:
         if self.is_busy:
             return
-        dropped = _parse_dropped_paths(str(event.data))
-        if not dropped:
-            return
-        self._start_search(dropped[0])
-
-    def _start_search(self, image_path: Path) -> None:
         if _index_signature(self.index_dir) is None:
-            messagebox.showwarning(self._app_title(), self._tr("err_index_missing"))
+            QMessageBox.warning(self, "Image Finder", "Index not found. Build the index first.")
             return
         if not image_path.exists():
-            messagebox.showerror(self._app_title(), self._tr("err_file_missing", path=image_path))
+            QMessageBox.critical(self, "Image Finder", f"File not found:\n{image_path}")
             return
-        if not is_image_file(image_path):
-            messagebox.showerror(self._app_title(), self._tr("err_unsupported_image", path=image_path))
+        if not is_supported_file(image_path):
+            QMessageBox.critical(self, "Image Finder", f"Unsupported file (image or DXF):\n{image_path}")
             return
 
+        self.results.clear()
+        self.progress.setRange(0, 0)
         self._set_busy(True)
-        self._start_indeterminate_progress()
-        self.metrics_var.set("")
-        self._set_status(self._tr("status_searching"), ACCENT)
-        self._show_empty_results(self._tr("empty_searching"))
+        self._set_status("Searching...")
+        self.metrics_label.setText("Running robust line-aware matching...")
 
-        worker = threading.Thread(target=self._search_worker, args=(image_path,), daemon=True)
-        worker.start()
+        thread = QThread(self)
+        worker = SearchWorker(
+            index_loader=self._get_runtime_index,
+            query_image=image_path,
+            top_k=int(self.top_k_spin.value()),
+            text_cache=self.text_cache,
+            enable_text_rerank=bool(self.ocr_check.isChecked()),
+            enable_ai_embedding=bool(self.ai_check.isChecked()),
+            robust_mode=bool(self.robust_check.isChecked()),
+        )
+        worker.moveToThread(thread)
 
-    def _search_worker(self, image_path: Path) -> None:
-        started = time.perf_counter()
-        try:
-            index = self._get_runtime_index()
-            results, context = find_similar_in_index_with_context(
-                index=index,
-                query_image=image_path,
-                top_k=self.top_k,
-                text_cache=self.text_cache,
-            )
-            elapsed = time.perf_counter() - started
-        except Exception as exc:  # pragma: no cover - UI error handling
-            self.root.after(0, lambda: self._show_error(str(exc)))
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_search_finished)
+        worker.failed.connect(self._show_error)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _on_search_finished(self, results: object, context: object, elapsed: float) -> None:
+        self.progress.setRange(0, 100)
+        self.progress.setValue(100)
+        self._set_busy(False)
+
+        cast_results = list(results) if isinstance(results, list) else []
+        cast_context = context if isinstance(context, SearchContext) else SearchContext("", False, False)
+
+        self._render_results(cast_results)
+        self._set_status(f"Done ({len(cast_results)} results)")
+
+        detail = (
+            f"Search: {elapsed:.3f}s | AI: {cast_context.used_ai_embedding} | OCR rerank: {cast_context.used_text_rerank}"
+        )
+        if cast_context.query_text:
+            detail += f" | OCR text: {_truncate(cast_context.query_text, 68)}"
+        self.metrics_label.setText(detail)
+
+    def _render_results(self, results: list[SearchResult]) -> None:
+        self.results.clear()
+        if not results:
+            self.results.addItem("No similar files found.")
             return
 
-        self.root.after(0, lambda: self._render_results(image_path, results, context, elapsed))
+        for rank, result in enumerate(results, start=1):
+            path = Path(result.path)
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, str(path))
+            item.setToolTip(str(path))
+            item.setSizeHint(QSize(980, 220))
+            self.results.addItem(item)
+            self.results.setItemWidget(item, self._build_result_card(rank=rank, result=result))
 
-    def _on_rebuild_progress(self, processed: int, total: int, reused: int, failed: int) -> None:
-        percent = 0.0 if total <= 0 else (processed * 100.0 / float(total))
+    def _load_preview_pixmap(self, path: Path) -> QPixmap:
+        pixmap = QPixmap(str(path))
+        if not pixmap.isNull():
+            return pixmap
 
-        def update() -> None:
-            self.progress_var.set(percent)
-            self.metrics_var.set(
-                self._tr(
-                    "metrics_rebuild_progress",
-                    processed=processed,
-                    total=total,
-                    reused=reused,
-                    failed=failed,
-                )
+        gray = load_preview_gray(path, max_side=920)
+        if gray is None:
+            return QPixmap()
+        if len(gray.shape) != 2:
+            return QPixmap()
+
+        raster = np.ascontiguousarray(gray.astype(np.uint8, copy=False))
+        height, width = raster.shape
+        image = QImage(raster.data, width, height, width, QImage.Format_Grayscale8).copy()
+        return QPixmap.fromImage(image)
+
+    def _build_result_card(self, rank: int, result: SearchResult) -> QWidget:
+        path = Path(result.path)
+        file_name = path.name or str(path)
+        extension = path.suffix.lower()
+        file_type = "DXF" if extension == ".dxf" else "Image"
+
+        card = QFrame()
+        card.setObjectName("resultCard")
+        outer = QHBoxLayout(card)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(12)
+
+        preview = QLabel("Preview unavailable")
+        preview.setObjectName("previewBox")
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumSize(300, 188)
+        preview.setMaximumSize(300, 188)
+        pixmap = self._load_preview_pixmap(path)
+        if not pixmap.isNull():
+            preview.setPixmap(pixmap.scaled(286, 176, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        outer.addWidget(preview)
+
+        info_col = QVBoxLayout()
+        info_col.setSpacing(6)
+        outer.addLayout(info_col, stretch=1)
+
+        title = QLabel(f"{rank:02d}. {file_name}")
+        title.setStyleSheet("font-size: 16px; font-weight: 700;")
+        info_col.addWidget(title)
+
+        score_badge = QLabel(f"Similarity: {result.score * 100.0:.2f}%")
+        score_badge.setObjectName("scoreBadge")
+        info_col.addWidget(score_badge)
+
+        details = QLabel(
+            " | ".join(
+                [
+                    f"type={file_type}",
+                    f"vector={result.vector_score:.4f}",
+                    f"hash={result.hash_score:.4f}",
+                    f"embed={result.embedding_score:.4f}",
+                    f"text={result.text_score:.4f}",
+                ]
             )
+        )
+        details.setObjectName("muted")
+        details.setWordWrap(True)
+        info_col.addWidget(details)
 
-        self.root.after(0, update)
+        path_label = QLabel(_truncate(str(path), 220))
+        path_label.setToolTip(str(path))
+        path_label.setWordWrap(True)
+        info_col.addWidget(path_label)
+
+        if result.text_excerpt:
+            ocr_label = QLabel(f"OCR: {_truncate(result.text_excerpt, 150)}")
+            ocr_label.setObjectName("muted")
+            ocr_label.setWordWrap(True)
+            info_col.addWidget(ocr_label)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        open_button = QPushButton("Open File")
+        open_button.setMinimumWidth(120)
+        open_button.clicked.connect(lambda _checked=False, p=path: self._open_result_path(p))
+        action_row.addWidget(open_button)
+        action_row.addStretch(1)
+        info_col.addLayout(action_row)
+
+        info_col.addStretch(1)
+        return card
 
     def _start_rebuild(self) -> None:
         if self.is_busy:
             return
-        desktop = Path.home() / "Desktop"
-        if not desktop.exists():
-            messagebox.showerror(self._app_title(), self._tr("err_desktop_missing", desktop=desktop))
+        if not self.compare_folders:
+            QMessageBox.critical(self, "Image Finder", "No compare folder selected.")
             return
+        for folder in self.compare_folders:
+            if not folder.exists():
+                QMessageBox.critical(self, "Image Finder", f"Folder not found:\n{folder}")
+                return
 
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.results.clear()
         self._set_busy(True)
-        self.progress.configure(mode="determinate")
-        self.progress_var.set(0.0)
-        self._set_status(self._tr("status_rebuilding"), ACCENT)
-        self.metrics_var.set(self._tr("metrics_scanning"))
-        self._show_empty_results(self._tr("empty_rebuilding"))
+        self._set_status("Building index...")
+        self.metrics_label.setText("Scanning files and extracting robust line features...")
 
-        worker = threading.Thread(target=self._rebuild_worker, args=(desktop,), daemon=True)
-        worker.start()
+        thread = QThread(self)
+        worker = RebuildWorker(index_dir=self.index_dir, folders=self.compare_folders)
+        worker.moveToThread(thread)
 
-    def _rebuild_worker(self, desktop_path: Path) -> None:
-        started = time.perf_counter()
-        try:
-            self.index_dir.mkdir(parents=True, exist_ok=True)
-            stats = build_index(
-                folders=[desktop_path],
-                output_dir=self.index_dir,
-                progress_callback=self._on_rebuild_progress,
-            )
-            elapsed = time.perf_counter() - started
-        except Exception as exc:  # pragma: no cover - UI error handling
-            self.root.after(0, lambda: self._show_error(str(exc)))
-            return
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_rebuild_progress)
+        worker.finished.connect(self._on_rebuild_finished)
+        worker.failed.connect(self._show_error)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
 
-        self.root.after(0, lambda: self._on_rebuild_done(stats, elapsed))
+        self._thread = thread
+        self._worker = worker
+        thread.start()
 
-    def _on_rebuild_done(self, stats: dict[str, int], elapsed: float) -> None:
+    def _on_rebuild_progress(self, processed: int, total: int, reused: int, failed: int) -> None:
+        percent = 0 if total <= 0 else int((processed * 100.0) / float(total))
+        self.progress.setValue(max(0, min(percent, 100)))
+        self.metrics_label.setText(
+            f"Processed: {processed}/{total} | Reused: {reused} | Failed: {failed}"
+        )
+
+    def _on_rebuild_finished(self, stats: object, elapsed: float) -> None:
         self._invalidate_cached_index()
         self._set_busy(False)
-        self.progress_var.set(100.0)
+        self.progress.setValue(100)
 
-        indexed_count = stats.get("indexed", 0)
-        reused_count = stats.get("reused", 0)
-        skipped_count = stats.get("failed", 0)
+        payload = stats if isinstance(stats, dict) else {}
+        indexed = int(payload.get("indexed", 0))
+        reused = int(payload.get("reused", 0))
+        failed = int(payload.get("failed", 0))
+        embedding_ready = bool(int(payload.get("embedding_ready", 0)))
 
-        self._set_status(self._tr("status_rebuild_done", indexed=indexed_count), SUCCESS)
-        self.metrics_var.set(
-            self._tr(
-                "metrics_rebuild_done",
-                elapsed=elapsed,
-                indexed=indexed_count,
-                reused=reused_count,
-                failed=skipped_count,
-            )
+        self._set_status(f"Index ready ({indexed} files)")
+        self.metrics_label.setText(
+            f"Done in {elapsed:.1f}s | Indexed: {indexed} | Reused: {reused} | Failed: {failed} | AI: {embedding_ready}"
         )
-        self._show_empty_results(self._tr("empty_ready"))
-        messagebox.showinfo(
-            self._app_title(),
-            self._tr(
-                "dialog_rebuild_done",
-                indexed=indexed_count,
-                reused=reused_count,
-                failed=skipped_count,
-                elapsed=elapsed,
+        QMessageBox.information(
+            self,
+            "Image Finder",
+            (
+                "Index build completed.\n"
+                f"Indexed files: {indexed}\n"
+                f"Reused: {reused}\n"
+                f"Failed: {failed}\n"
+                f"AI embedding ready: {embedding_ready}\n"
+                f"Time: {elapsed:.1f}s"
             ),
         )
 
+    def _open_result_item(self, item: QListWidgetItem) -> None:
+        path_raw = item.data(Qt.UserRole)
+        if not path_raw:
+            return
+        self._open_result_path(Path(str(path_raw)))
+
+    def _open_result_path(self, path: Path) -> None:
+        if not path.exists():
+            QMessageBox.critical(self, "Image Finder", f"File not found:\n{path}")
+            return
+        _open_file(path)
+
     def _show_error(self, message: str) -> None:
         self._set_busy(False)
-        self._stop_progress()
-        self._set_status(self._tr("status_failed"), ERROR)
-        self.metrics_var.set(message)
-        self._show_empty_results(self._tr("empty_failed"))
-        messagebox.showerror(self._app_title(), message)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self._set_status("Operation failed", error=True)
+        self.metrics_label.setText(message)
+        QMessageBox.critical(self, "Image Finder", message)
 
-    def _load_logo(self, width: int = 84, height: int = 84):
-        if Image is None or ImageTk is None:
-            return None
-        logo_path = _resource_path(LOGO_RELATIVE_PATH)
-        if not logo_path.exists():
-            return None
-
-        try:
-            with Image.open(logo_path) as img:
-                source = img.convert("RGBA")
-                resample_group = getattr(Image, "Resampling", Image)
-                source.thumbnail((width, height), resample_group.LANCZOS)
-                canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-                x = (width - source.width) // 2
-                y = (height - source.height) // 2
-                canvas.alpha_composite(source, (x, y))
-            return ImageTk.PhotoImage(canvas)
-        except Exception:
-            return None
-
-    def _create_thumbnail(self, path: Path, width: int = 300, height: int = 220):
-        if Image is None or ImageTk is None:
-            return None
-        try:
-            with Image.open(path) as img:
-                image = img.convert("RGB")
-                resample_group = getattr(Image, "Resampling", Image)
-                image.thumbnail((width, height), resample_group.LANCZOS)
-                canvas = Image.new("RGB", (width, height), color=(34, 34, 34))
-                x = (width - image.width) // 2
-                y = (height - image.height) // 2
-                canvas.paste(image, (x, y))
-            return ImageTk.PhotoImage(canvas)
-        except Exception:
-            return None
-
-    def _show_empty_results(self, message: str) -> None:
-        self.last_results = []
-        self.thumbnail_refs = []
-        self.empty_logo_ref = None
-        for child in self.results_frame.winfo_children():
-            child.destroy()
-
-        empty_shell = tk.Frame(
-            self.results_frame,
-            bg=RESULTS_CARD_BG,
-            highlightthickness=1,
-            highlightbackground=RESULTS_CARD_BORDER,
-            highlightcolor=RESULTS_CARD_BORDER,
-            padx=18,
-            pady=18,
-        )
-        empty_shell.pack(fill=tk.X, padx=14, pady=14)
-
-        logo = self._load_logo(width=110, height=110)
-        if logo is not None:
-            logo_label = tk.Label(empty_shell, image=logo, bg=RESULTS_CARD_BG, bd=0)
-            logo_label.pack(anchor=tk.W, pady=(0, 8))
-            self.empty_logo_ref = logo
-
-        label = tk.Label(
-            empty_shell,
-            text=message,
-            bg=RESULTS_CARD_BG,
-            fg=RESULTS_CARD_TEXT,
-            font=("Bahnschrift SemiBold", 13),
-            anchor="w",
-            justify=tk.LEFT,
-            wraplength=760,
-        )
-        label.pack(anchor=tk.W)
-
-        hint = tk.Label(
-            empty_shell,
-            text=self._tr("empty_hint"),
-            bg=RESULTS_CARD_BG,
-            fg=RESULTS_CARD_SUBTEXT,
-            font=("Segoe UI", 9),
-            anchor="w",
-            justify=tk.LEFT,
-            wraplength=760,
-        )
-        hint.pack(anchor=tk.W, pady=(4, 0))
-        self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
-
-    def _card_columns(self) -> int:
-        width = max(1, self.results_canvas.winfo_width())
-        if width >= 1500:
-            return 3
-        if width >= 980:
-            return 2
-        return 1
-
-    def _open_file(self, path: Path) -> None:
-        if not path.exists():
-            messagebox.showerror(self._app_title(), self._tr("err_file_missing", path=path))
+    def dragEnterEvent(self, event) -> None:  # type: ignore[override]
+        if self.is_busy:
+            event.ignore()
             return
-        os.startfile(str(path))  # type: ignore[attr-defined]
-
-    def _render_result_cards(self, results: list[SearchResult]) -> None:
-        self.last_results = list(results)
-        self.thumbnail_refs = []
-        self.empty_logo_ref = None
-
-        for child in self.results_frame.winfo_children():
-            child.destroy()
-
-        if not results:
-            self._show_empty_results(self._tr("empty_no_results"))
+        if not self.drag_check.isChecked():
+            event.ignore()
             return
-
-        columns = self._card_columns()
-        for col in range(3):
-            self.results_frame.grid_columnconfigure(col, weight=0, uniform="")
-        for col in range(columns):
-            self.results_frame.grid_columnconfigure(col, weight=1, uniform="result-col")
-
-        available_width = max(620, self.results_canvas.winfo_width())
-        card_wraplength = max(240, int(available_width / max(columns, 1)) - 88)
-        thumb_width = max(250, min(360, int(available_width / max(columns, 1)) - 72))
-        thumb_height = int(thumb_width * 0.78)
-        self.last_canvas_width = self.results_canvas.winfo_width()
-
-        def _bind_open(widget: tk.Widget, file_path: Path) -> None:
-            widget.bind("<Double-Button-1>", lambda _event, p=file_path: self._open_file(p))
-
-        for idx, result in enumerate(results, start=1):
-            row = (idx - 1) // columns
-            col = (idx - 1) % columns
-            result_path = Path(result.path)
-            file_name = result_path.name if result_path.name else str(result_path)
-
-            card = tk.Frame(
-                self.results_frame,
-                bg=RESULTS_CARD_BG,
-                highlightthickness=1,
-                highlightbackground=RESULTS_CARD_BORDER,
-                highlightcolor=RESULTS_CARD_BORDER,
-                padx=12,
-                pady=12,
-            )
-            card.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
-            card.grid_columnconfigure(0, weight=1)
-            _bind_open(card, result_path)
-
-            rank_label = tk.Label(
-                card,
-                text=self._tr("card_rank", rank=idx),
-                bg="#242424",
-                fg=RESULTS_CARD_TEXT,
-                font=("Bahnschrift SemiBold", 10),
-                padx=9,
-                pady=4,
-            )
-            rank_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
-            _bind_open(rank_label, result_path)
-
-            thumb = self._create_thumbnail(result_path, width=thumb_width, height=thumb_height)
-            thumb_label = tk.Label(
-                card,
-                bg=RESULTS_THUMB_BG,
-                fg="#bcbcbc",
-                text=self._tr("card_no_preview"),
-                width=40,
-                height=11,
-                highlightthickness=1,
-                highlightbackground=PANEL_BORDER,
-            )
-            if thumb is not None:
-                thumb_label.configure(image=thumb, text="")
-                self.thumbnail_refs.append(thumb)
-            thumb_label.grid(row=1, column=0, sticky="ew")
-            _bind_open(thumb_label, result_path)
-
-            name_label = tk.Label(
-                card,
-                text=_truncate(file_name, 80),
-                bg=RESULTS_CARD_BG,
-                fg=RESULTS_CARD_TEXT,
-                font=("Segoe UI Semibold", 10),
-                anchor="w",
-                justify=tk.LEFT,
-                wraplength=card_wraplength,
-            )
-            name_label.grid(row=2, column=0, sticky="ew", pady=(8, 2))
-            _bind_open(name_label, result_path)
-
-            if result.text_excerpt:
-                text_label = tk.Label(
-                    card,
-                    text=self._tr("card_ocr", text=_truncate(result.text_excerpt, 96)),
-                    bg="#202020",
-                    fg="#f1f1f1",
-                    font=("Segoe UI", 9),
-                    anchor="w",
-                    justify=tk.LEFT,
-                    wraplength=card_wraplength,
-                    padx=7,
-                    pady=5,
-                )
-                text_label.grid(row=3, column=0, sticky="ew", pady=(3, 6))
-                _bind_open(text_label, result_path)
-
-            path_label = tk.Label(
-                card,
-                text=_truncate(result.path, 140),
-                bg=RESULTS_CARD_BG,
-                fg=RESULTS_CARD_SUBTEXT,
-                font=("Segoe UI", 8),
-                anchor="w",
-                justify=tk.LEFT,
-                wraplength=card_wraplength,
-            )
-            path_label.grid(row=4, column=0, sticky="ew", pady=(0, 8))
-            _bind_open(path_label, result_path)
-
-            open_button = ttk.Button(
-                card,
-                text=self._tr("card_open"),
-                style="Card.TButton",
-                command=lambda p=result_path: self._open_file(p),
-            )
-            open_button.grid(row=5, column=0, sticky="ew")
-
-        self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
-
-    def _render_results(
-        self,
-        image_path: Path,
-        results: list[SearchResult],
-        context: SearchContext,
-        elapsed: float,
-    ) -> None:
-        self._set_busy(False)
-        self._stop_progress()
-        self._render_result_cards(results)
-
-        self._set_status(self._tr("status_search_done", count=len(results)), SUCCESS)
-        if context.query_text and context.used_text_rerank:
-            self.metrics_var.set(
-                self._tr("metrics_search_with_rerank", elapsed=elapsed, text=_truncate(context.query_text, 64))
-            )
-        elif context.query_text:
-            self.metrics_var.set(
-                self._tr("metrics_search_with_ocr", elapsed=elapsed, text=_truncate(context.query_text, 64))
-            )
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
         else:
-            self.metrics_var.set(self._tr("metrics_search_visual_only", elapsed=elapsed, query=image_path))
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # type: ignore[override]
+        if self.is_busy or not self.drag_check.isChecked():
+            event.ignore()
+            return
+        for url in event.mimeData().urls():
+            if not url.isLocalFile():
+                continue
+            dropped = Path(url.toLocalFile())
+            self._start_search(dropped)
+            event.acceptProposedAction()
+            return
+        event.ignore()
 
 
 def run_gui(index_dir: Path | None = None, top_k: int = 12) -> int:
-    active_index_dir = index_dir or _get_default_index_dir()
-    root = TkinterDnD.Tk() if DND_ENABLED and TkinterDnD is not None else tk.Tk()
-    ImageFinderApp(root, index_dir=active_index_dir, top_k=top_k)
-    root.mainloop()
-    return 0
+    if not QT_AVAILABLE or QApplication is None:
+        raise RuntimeError("PySide6 is not installed. Install with: pip install PySide6")
 
+    active_index_dir = index_dir or _get_default_index_dir()
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+
+    app_icon = _load_app_icon()
+    if app_icon is not None:
+        app.setWindowIcon(app_icon)
+
+    window = ImageFinderWindow(index_dir=active_index_dir, top_k=top_k)
+    window.show()
+    return app.exec()

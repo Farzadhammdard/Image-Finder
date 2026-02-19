@@ -1,11 +1,11 @@
 param(
-    [string]$SourceDistDir = "dist_v3\ImageFinder"
+    [string]$SourceDistDir = "dist_v4\ImageFinder"
 )
 
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
-$defaultSourceDistDir = "dist_v3\ImageFinder"
+$defaultSourceDistDir = "dist_v4\ImageFinder"
 $distExe = Join-Path $PSScriptRoot (Join-Path $SourceDistDir "ImageFinder.exe")
 if (-not (Test-Path $distExe)) {
     if ($SourceDistDir -ne $defaultSourceDistDir) {
